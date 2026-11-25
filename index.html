@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Chai & Queries☕</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#e9edf1;color:#182633;font:14px Arial,sans-serif}
+header{background:#253f56;color:white;padding:12px 15px;border-bottom:3px solid #b9c7d2}
+header b{font-size:18px}header span{font-size:12px;color:#d8e2e9}
+main{max-width:1000px;margin:14px auto;padding:0 10px}.window{background:#fff;border:1px solid #bcc8d1;box-shadow:0 2px 8px #0001;margin-bottom:12px}
+.bar{background:#e2e8ed;border-bottom:1px solid #c5d0d8;padding:9px 12px;font-weight:bold;color:#314b60}
+.toolbar{padding:9px;display:flex;gap:7px;flex-wrap:wrap;border-bottom:1px solid #d8e0e6}
+button{border:1px solid #aebbc5;background:linear-gradient(#fff,#e8edf1);border-radius:3px;padding:8px 12px;color:#24394b;font-weight:600}
+button.run{background:linear-gradient(#527b9c,#315b7d);border-color:#294d6b;color:white}
+textarea{width:100%;height:210px;border:0;resize:vertical;padding:13px;font:14px/1.55 Consolas,monospace;outline:none;color:#172b3c}
+#out{padding:12px;min-height:120px;overflow:auto;font:13px/1.5 Consolas,monospace}
+table{border-collapse:collapse;width:100%;font:13px Arial}th{background:#dce6ed;color:#263e52}td,th{border:1px solid #bfcbd4;padding:7px 9px;text-align:left}tr:nth-child(even) td{background:#f6f8fa}
+.success{color:#226b45}.error{color:#a12e2e;white-space:pre-wrap}.muted{color:#687987}
+#prompt{background:#172b3c;color:#d9e6ef;padding:8px 12px;font:12px Consolas,monospace}
+#history{white-space:pre-wrap;max-height:115px;overflow:auto;padding:8px 12px;color:#526575;font:12px Consolas,monospace}
+.small{font-size:12px;color:#647584;padding:8px 12px;line-height:1.5}
+@media(max-width:600px){main{margin:8px auto}.toolbar button{flex:1}textarea{height:190px}}
+</style></head><body>
+<header><b>Chai & Queries ☕</b><br></header>
+<main>
+<div class="window"><div class="bar">SQL Worksheet</div><div class="toolbar">
+<button class="run" id="run">▶ Run </button><button id="clear">Clear editor</button><button id="sample">Load example</button><button id="reset">Reset database</button><button id="save">Save SQL</button>
+</div>
+<textarea id="sql" placeholder="-- Enter your SQL here" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+<div id="prompt">SQL&gt; Ready.</div></div>
+<div class="window"><div class="bar">Query Output</div><div id="out"><span class="muted">Query results and execution messages appear here.</span></div></div>
+<div class="window"><div class="bar">Command History</div><div id="history">session started.</div></div>
+<div class="small">Work ആവുന്ന തന്നെ ഭാഗ്യം...🤲🏻 </div>
+</main>
+<script>
+(()=>{
+"use strict";
+const $=id=>document.getElementById(id);
+const db={tables:{},views:{},triggers:{},procedures:{},functions:{}},cursors={};
+const MAX_DEPTH=20; let depth=0;
+const fail=m=>{throw new Error(m)};
+const norm=v=>v===null||v===undefined?"\u0000NULL":String(v).toLowerCase();
+function splitTop(s, delimiter){
+ let out=[],buf="",q=false,d=0; const delim=delimiter.toUpperCase();
+ for(let i=0;i<s.length;i++){let c=s[i];
+  if(c==="'" ){if(q&&s[i+1]==="'"){buf+="''";i++;continue;}q=!q;buf+=c;continue;}
+  if(!q){if(c==="(")d++;else if(c===")")d--;
+   if(d===0&&s.slice(i,i+delimiter.length).toUpperCase()===delim){out.push(buf.trim());buf="";i+=delimiter.length-1;continue;}
+  }buf+=c;
+ }if(buf.trim())out.push(buf.trim());return out;
+}
+function splitStatements(src){
+ src=stripComments(src);let out=[],buf="",q=false,d=0,block=0;
+ for(let i=0;i<src.length;i++){let c=src[i];
+  if(c==="'"){if(q&&src[i+1]==="'"){buf+="''";i++;continue;}q=!q;buf+=c;continue;}
+  if(!q){if(c==="(")d++;if(c===")")d--;
+   const rest=src.slice(i), m=rest.match(/^(BEGIN|DECLARE|END)\b/i);
+   if(m){let w=m[1].toUpperCase();if(w==="BEGIN"||w==="DECLARE")block++;else if(block)block--;buf+=m[0];i+=m[0].length-1;continue;}
+   if(c===";"&&d===0&&block===0){if(buf.trim())out.push(buf.trim());buf="";continue;}
+  }buf+=c;
+ }if(buf.trim())out.push(buf.trim());return out;
+}
+function stripComments(src){
+ let out="",q=false;
+ for(let i=0;i<src.length;i++){let c=src[i];
+  if(c==="'" ){if(q&&src[i+1]==="'"){out+="''";i++;continue;}q=!q;out+=c;continue;}
+  if(!q&&c==="-"&&src[i+1]==="-"){while(i<src.length&&src[i]!=="\n")i++;out+="\n";continue;}
+  if(!q&&c==="/"&&src[i+1]==="*"){i+=2;while(i<src.length&&!(src[i]==="*"&&src[i+1]==="/"))i++;i++;continue;}
+  out+=c;
+ }return out;
+}
+function parts(s){return splitTop(s,",");}
+function outer(s){s=s.trim();if(!s.startsWith("(")||!s.endsWith(")"))return s;let q=false,d=0;for(let i=0;i<s.length;i++){if(s[i]==="'"){if(q&&s[i+1]==="'"){i++;continue;}q=!q;}if(!q){if(s[i]==="(")d++;if(s[i]===")")d--;if(d===0&&i<s.length-1)return s;}}return s.slice(1,-1).trim();}
+function literal(s){s=s.trim();if(/^null$/i.test(s))return null;if(/^'.*'$/s.test(s))return s.slice(1,-1).replace(/''/g,"'");if(/^[+-]?\d+(\.\d+)?$/.test(s))return Number(s);return undefined;}
+function splitLogical(s,word){return splitTopWord(s,word);}
+function splitTopWord(s,word){
+ let out=[],buf="",q=false,d=0,up=s.toUpperCase(),re=new RegExp("\\b"+word+"\\b","g"),last=0,m;
+ while((m=re.exec(up))){let i=m.index,q2=false,d2=0;for(let j=last;j<i;j++){if(s[j]==="'"){if(q2&&s[j+1]==="'"){j++;continue;}q2=!q2;}if(!q2){if(s[j]==="(")d2++;if(s[j]===")")d2--;}}
+ if(!q2&&d2===0){out.push(s.slice(last,i).trim());last=i+m[0].length;}}
+ if(last){out.push(s.slice(last).trim());return out;}return [s.trim()];
+}
+function findOp(s,ops){
+ let q=false,d=0,found=null;for(let i=0;i<s.length;i++){let c=s[i];if(c==="'"){if(q&&s[i+1]==="'"){i++;continue;}q=!q;continue;}if(q)continue;if(c==="("){d++;continue;}if(c===")"){d--;continue;}if(d)continue;
+  for(let op of ops){if(s.slice(i,i+op.length).toUpperCase()===op){if((op==="+"||op==="-")&&(i===0||/[-+*\\/(]\s*$/.test(s.slice(0,i))))continue;found=[i,op];i+=op.length-1;break;}}
+ }return found;
+}
+function evalExpr(input,row={},scope={},ctx={}){
+ let e=outer(String(input).trim()),m,v;
+ if(!e)return null;
+ let l=literal(e);if(l!==undefined||/^null$/i.test(e))return l;
+ if(/^SYSDATE$/i.test(e))return new Date();
+ if(/^DATE\s*'/.test(e))return literal(e.replace(/^DATE\s*/i,""));
+ if(/^SELECT\b/i.test(e)){let rr=select(e,scope);return rr.length?Object.values(rr[0])[0]:null;}
+ // Boolean precedence
+ let xs=splitLogical(e,"OR");if(xs.length>1)return xs.some(x=>truth(evalExpr(x,row,scope,ctx)));
+ xs=splitLogical(e,"AND");if(xs.length>1)return xs.every(x=>truth(evalExpr(x,row,scope,ctx)));
+ if((m=e.match(/^NOT\s+([\s\S]+)$/i)))return !truth(evalExpr(m[1],row,scope,ctx));
+ if((m=e.match(/^([\s\S]+?)\s+IS\s+(NOT\s+)?NULL$/i))){v=evalExpr(m[1],row,scope,ctx);return m[2]?v!==null:v===null;}
+ if((m=e.match(/^([\s\S]+?)\s+(NOT\s+)?LIKE\s+('(?:''|[^'])*')$/i))){let a=evalExpr(m[1],row,scope,ctx),p=literal(m[3]),rx="^"+p.replace(/[.*+?^${}()|[\]\\]/g,"\\$&").replace(/%/g,".*").replace(/_/g,".")+"$";let ok=new RegExp(rx).test(String(a??""));return m[2]?!ok:ok;}
+ if((m=e.match(/^([\s\S]+?)\s+(NOT\s+)?BETWEEN\s+([\s\S]+?)\s+AND\s+([\s\S]+)$/i))){let a=evalExpr(m[1],row,scope,ctx),b=evalExpr(m[3],row,scope,ctx),c=evalExpr(m[4],row,scope,ctx),ok=a!==null&&b!==null&&c!==null&&a>=b&&a<=c;return m[2]?!ok:ok;}
+ if((m=e.match(/^([\s\S]+?)\s+(NOT\s+)?IN\s*\(([\s\S]+)\)$/i))){let a=evalExpr(m[1],row,scope,ctx),b=/^\s*SELECT\b/i.test(m[3])?select(m[3],scope).map(x=>Object.values(x)[0]):parts(m[3]).map(x=>evalExpr(x,row,scope,ctx));let ok=b.some(x=>norm(x)===norm(a));return m[2]?!ok:ok;}
+ let op=findOp(e,["<=",">=","<>","!=","=","<",">"]);if(op){let a=evalExpr(e.slice(0,op[0]),row,scope,ctx),b=evalExpr(e.slice(op[0]+op[1].length),row,scope,ctx);if(a===null||b===null)return false;return {"=":()=>norm(a)===norm(b),"!=":()=>norm(a)!==norm(b),"<>":()=>norm(a)!==norm(b),"<":()=>a<b,">":()=>a>b,"<=":()=>a<=b,">=":()=>a>=b}[op[1]]();}
+ op=findOp(e,["||"]);if(op)return String(evalExpr(e.slice(0,op[0]),row,scope,ctx)??"")+String(evalExpr(e.slice(op[0]+2),row,scope,ctx)??"");
+ op=findOp(e,["+","-"]);if(op){let a=Number(evalExpr(e.slice(0,op[0]),row,scope,ctx)),b=Number(evalExpr(e.slice(op[0]+1),row,scope,ctx));return e[op[0]]==="+"?a+b:a-b;}
+ op=findOp(e,["*","/"]);if(op){let a=Number(evalExpr(e.slice(0,op[0]),row,scope,ctx)),b=Number(evalExpr(e.slice(op[0]+1),row,scope,ctx));return e[op[0]]==="*"?a*b:(b===0?null:a/b);}
+ if((m=e.match(/^\((SELECT[\s\S]+)\)$/i))){let rows=select(m[1],scope);return rows.length?Object.values(rows[0])[0]:null;}
+ if((m=e.match(/^([A-Za-z_$][\w$#]*)\s*\(([\s\S]*)\)$/))){let name=m[1].toUpperCase(),args=m[2].trim()?parts(m[2]).map(x=>evalExpr(x,row,scope,ctx)):[];if(db.functions[name.toLowerCase()])return callFunction(name,args,scope);return builtin(name,args,scope);}
+ let key=e.split(".").pop().replace(/"/g,"").toLowerCase();
+ if(Object.prototype.hasOwnProperty.call(scope,key))return scope[key];
+ if(Object.prototype.hasOwnProperty.call(row,key))return row[key];
+ if((m=e.match(/^:(OLD|NEW)\.(\w+)$/i))){let src=m[1].toUpperCase()==="OLD"?ctx.old:ctx.new;return src?src[m[2].toLowerCase()]:null;}
+ if(/^:[A-Za-z_]\w*$/.test(e)){let k=e.slice(1).toLowerCase();if(ctx.old&&k in ctx.old)return ctx.old[k];if(ctx.new&&k in ctx.new)return ctx.new[k];}
+ fail("ORA-00904: invalid identifier: "+e);
+}
+function truth(v){return v===true||v===1;}
+function builtin(n,a,scope){
+ switch(n){
+ case "UPPER":return String(a[0]??"").toUpperCase();case "LOWER":return String(a[0]??"").toLowerCase();
+ case "LENGTH":return a[0]==null?null:String(a[0]).length;case "SUBSTR":return a[0]==null?null:String(a[0]).substr(Number(a[1])-1,a[2]===undefined?undefined:Number(a[2]));
+ case "ROUND":{let p=Number(a[1]||0),f=Math.pow(10,p);return Math.round(Number(a[0])*f)/f;}
+ case "NVL":return a[0]===null?a[1]:a[0];case "TO_CHAR":return a[0] instanceof Date?a[0].toISOString().slice(0,10):String(a[0]??"");
+ case "SYSDATE":return new Date();default:fail("ORA-00904: invalid identifier: "+n);}
+}
+function table(n){n=n.toLowerCase();if(n==="dual")return db.tables.dual;if(db.tables[n])return db.tables[n];if(db.views[n])return {cols:[],rows:select(db.views[n])};fail("ORA-00942: table or view does not exist: "+n);}
+function select(sql,scope={}){
+ sql=sql.trim().replace(/;$/,"");
+ let set=findSet(sql);if(set){let a=select(sql.slice(0,set.i),scope),b=select(sql.slice(set.i+set.op.length),scope),key=x=>JSON.stringify(Object.values(x));if(set.op==="UNION ALL")return [...a,...b];if(set.op==="UNION")return [...new Map([...a,...b].map(x=>[key(x),x])).values()];return a.filter(x=>set.op==="INTERSECT"?b.some(y=>key(y)===key(x)):!b.some(y=>key(y)===key(x)));}
+ let m=sql.match(/^SELECT\s+([\s\S]+?)\s+FROM\s+(\w+)(?:\s+WHERE\s+([\s\S]+?))?(?:\s+GROUP\s+BY\s+([\s\S]+?))?(?:\s+HAVING\s+([\s\S]+?))?(?:\s+ORDER\s+BY\s+([\s\S]+))?$/i);
+ if(!m)fail("ORA-00900: invalid or unsupported SELECT statement");
+ let [,proj,tn,where,group,having,order]=m,source=table(tn).rows,rows=source.filter(r=>!where||truth(evalExpr(where,r,scope)));
+ let projections=parts(proj),hasAgg=projections.some(p=>/\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/i.test(p));
+ let buckets=[];
+ if(group){let map=new Map();rows.forEach(r=>{let k=JSON.stringify(parts(group).map(x=>evalExpr(x,r,scope)));if(!map.has(k))map.set(k,[]);map.get(k).push(r);});buckets=[...map.values()];}
+ else if(hasAgg)buckets=[rows];else buckets=rows.map(r=>[r]);
+ let out=[];
+ for(let arr of buckets){if(!arr.length&&group)continue;let base=arr[0]||{},o={},aggVals={};
+  for(let p of projections){let a=p.match(/^([\s\S]+?)\s+AS\s+(\w+)$/i),ex=(a?a[1]:p).trim(),alias=a?a[2].toLowerCase():(ex==="*"?"":ex.replace(/\W/g,"_").toLowerCase()),ag=ex.match(/^(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(.*?)\s*\)$/i);
+   if(ex==="*"){Object.assign(o,base);continue;}
+   let v;if(ag){let vals=ag[2]==="*"?arr:arr.map(r=>evalExpr(ag[2],r,scope)).filter(x=>x!==null);switch(ag[1].toUpperCase()){case"COUNT":v=vals.length;break;case"SUM":v=vals.reduce((s,x)=>s+Number(x),0);break;case"AVG":v=vals.length?vals.reduce((s,x)=>s+Number(x),0)/vals.length:null;break;case"MIN":v=vals.length?vals.reduce((a,b)=>a<b?a:b):null;break;case"MAX":v=vals.length?vals.reduce((a,b)=>a>b?a:b):null;break;}alias=alias||ag[1].toLowerCase()+"_"+Object.keys(o).length;aggVals[ex.toUpperCase()]=v;}else v=evalExpr(ex,base,scope);
+   o[alias]=v;
+  }
+  if(having&&!truth(evalHaving(having,o,arr,scope)))continue;out.push(o);
+ }
+ if(order){let specs=parts(order).map(x=>{let a=x.trim().match(/^(.+?)(?:\s+(ASC|DESC))?$/i);return {key:a[1].trim().toLowerCase(),dir:(a[2]||"ASC").toUpperCase()};});
+  out.sort((a,b)=>{for(let z of specs){let av=a[z.key],bv=b[z.key];if(av===undefined){let src=rows[0]||{};av=src[z.key];}if(bv===undefined){let src=rows[0]||{};bv=src[z.key];}let c=av>bv?1:av<bv?-1:0;if(c)return z.dir==="DESC"?-c:c;}return 0;});
+ }return out;
+}
+function evalHaving(h,o,arr,scope){let x=h.replace(/\b(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(\*|[\w.]+)\s*\)/gi,(all,fn,col)=>{let vals=col==="*"?arr:arr.map(r=>r[col.toLowerCase()]).filter(v=>v!=null);let v=fn.toUpperCase()==="COUNT"?vals.length:fn.toUpperCase()==="SUM"?vals.reduce((s,v)=>s+Number(v),0):fn.toUpperCase()==="AVG"?(vals.length?vals.reduce((s,v)=>s+Number(v),0)/vals.length:null):fn.toUpperCase()==="MIN"?(vals.length?vals.reduce((a,b)=>a<b?a:b):null):(vals.length?vals.reduce((a,b)=>a>b?a:b):null);return String(v);});return evalExpr(x,o,scope);}
+function findSet(s){let q=false,d=0,up=s.toUpperCase();for(let i=0;i<s.length;i++){if(s[i]==="'"){if(q&&s[i+1]==="'"){i++;continue;}q=!q;}if(q)continue;if(s[i]==="(")d++;if(s[i]===")")d--;if(!d){let m=up.slice(i).match(/^(UNION\s+ALL|UNION|INTERSECT|MINUS)\b/);if(m)return {i,op:m[1].replace(/\s+/g," ").toUpperCase()};}}return null;}
+function fire(timing,event,name,oldRow,newRow){if(depth>=MAX_DEPTH)fail("ORA-00036: maximum trigger recursion depth exceeded");for(let t of Object.values(db.triggers)){if(t.table===name&&t.timing===timing&&t.event===event){depth++;try{for(let s of splitStatements(t.body))execute(s,{}, {old:oldRow||{},new:newRow||{}});}finally{depth--;}}}}
+function execute(s,scope={},ctx={}){
+ s=s.trim().replace(/;$/,"");let m;
+ if((m=s.match(/^CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+(\w+)\s+(BEFORE|AFTER)\s+(INSERT|UPDATE|DELETE)\s+ON\s+(\w+)[\s\S]*?\bBEGIN\b([\s\S]*?)\bEND\s*$/i))){db.triggers[m[1].toLowerCase()]={timing:m[2].toUpperCase(),event:m[3].toUpperCase(),table:m[4].toLowerCase(),body:m[5]};return "Trigger created.";}
+ if((m=s.match(/^CREATE\s+(?:OR\s+REPLACE\s+)?(PROCEDURE|FUNCTION)\s+(\w+)\s*(?:\(([\s\S]*?)\))?\s*(?:RETURN\s+[\w%$#]+(?:\s*\([^)]*\))?\s*)?(?:IS|AS)\s+BEGIN\b([\s\S]*?)\bEND(?:\s+\w+)?\s*;?\s*$/i))){let args=parts(m[3]||"").map(x=>{let z=x.trim().match(/^([A-Za-z]\w*)/);return z?z[1].toLowerCase():fail("Invalid parameter declaration");}),obj={args,body:m[4]};(m[1].toUpperCase()==="PROCEDURE"?db.procedures:db.functions)[m[2].toLowerCase()]=obj;return m[1].toUpperCase()+" created.";}
+ if((m=s.match(/^CREATE\s+TABLE\s+(\w+)\s*\(([\s\S]+)\)$/i))){let n=m[1].toLowerCase();if(db.tables[n])fail("ORA-00955: name is already used");let defs=parts(m[2]),cols=[],constraints=[];for(let d of defs){if(/^(CONSTRAINT\b|PRIMARY\s+KEY\b|FOREIGN\s+KEY\b|UNIQUE\s*\()/i.test(d)){constraints.push(d);continue;}let z=d.match(/^(\w+)\s+([\w]+(?:\s*\([^)]*\))?)([\s\S]*)$/);if(!z)continue;let c={name:z[1].toLowerCase(),type:z[2].toUpperCase(),notNull:/NOT\s+NULL/i.test(z[3]),unique:/UNIQUE/i.test(z[3]),pk:/PRIMARY\s+KEY/i.test(z[3]),check:(z[3].match(/CHECK\s*\((.*?)\)/i)||[])[1]};cols.push(c);}
+  let t={cols:cols.map(c=>c.name),meta:cols,rows:[],pk:null,unique:[],fks:[]};for(let c of cols){if(c.pk)t.pk=[c.name];if(c.unique)t.unique.push([c.name]);}
+  for(let d of constraints){let z=d.match(/(?:CONSTRAINT\s+\w+\s+)?PRIMARY\s+KEY\s*\(([^)]+)\)/i);if(z)t.pk=parts(z[1]).map(x=>x.toLowerCase());z=d.match(/(?:CONSTRAINT\s+\w+\s+)?UNIQUE\s*\(([^)]+)\)/i);if(z)t.unique.push(parts(z[1]).map(x=>x.toLowerCase()));z=d.match(/(?:CONSTRAINT\s+\w+\s+)?FOREIGN\s+KEY\s*\(([^)]+)\)\s+REFERENCES\s+(\w+)\s*\(([^)]+)\)/i);if(z)t.fks.push({cols:parts(z[1]).map(x=>x.toLowerCase()),table:z[2].toLowerCase(),refs:parts(z[3]).map(x=>x.toLowerCase())});}
+  db.tables[n]=t;return "Table created.";}
+ if((m=s.match(/^INSERT\s+INTO\s+(\w+)\s*(?:\((.*?)\))?\s+VALUES\s*\(([\s\S]*)\)$/i))){let name=m[1].toLowerCase(),t=table(name),cs=m[2]?parts(m[2]).map(x=>x.toLowerCase()):t.cols,vs=parts(m[3]).map(x=>evalExpr(x,{},scope,ctx));if(cs.length!==vs.length)fail("ORA-00913: too many values or column/value count mismatch");for(let c of cs)if(!t.cols.includes(c))fail("ORA-00904: invalid identifier: "+c);let r=Object.fromEntries(t.cols.map(c=>[c,null]));cs.forEach((c,i)=>r[c]=vs[i]);checkRow(t,r,null);fire("BEFORE","INSERT",name,null,r);t.rows.push(r);fire("AFTER","INSERT",name,null,r);return "1 row inserted.";}
+ if(/^INSERT\s+ALL/i.test(s))fail("INSERT ALL is not implemented.");
+ if(/^SELECT\s/i.test(s))return select(s,scope);
+ if((m=s.match(/^UPDATE\s+(\w+)\s+SET\s+([\s\S]+?)(?:\s+WHERE\s+([\s\S]+))?$/i))){let name=m[1].toLowerCase(),t=table(name),n=0;for(let r of t.rows){if(!m[3]||truth(evalExpr(m[3],r,scope))){let old={...r},current=r;fire("BEFORE","UPDATE",name,old,r);for(let x of parts(m[2])){let z=x.match(/^(\w+)\s*=\s*([\s\S]+)$/);if(!z||!t.cols.includes(z[1].toLowerCase()))fail("ORA-00904: invalid identifier");r[z[1].toLowerCase()]=evalExpr(z[2],r,scope);}checkRow(t,r,current);fire("AFTER","UPDATE",name,old,r);n++;}}return n+" row(s) updated.";}
+ if((m=s.match(/^DELETE\s+FROM\s+(\w+)(?:\s+WHERE\s+([\s\S]+))?$/i))){let name=m[1].toLowerCase(),t=table(name),del=t.rows.filter(r=>!m[2]||truth(evalExpr(m[2],r,scope)));for(let r of del){for(let child of Object.values(db.tables))for(let fk of child.fks||[])if(fk.table===name&&child.rows.some(cr=>fk.cols.every((c,i)=>norm(cr[c])===norm(r[fk.refs[i]]))))fail("ORA-02292: integrity constraint violated - child record found");fire("BEFORE","DELETE",name,r,null);}t.rows=t.rows.filter(r=>!del.includes(r));del.forEach(r=>fire("AFTER","DELETE",name,r,null));return del.length+" row(s) deleted.";}
+ if((m=s.match(/^CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(\w+)\s+AS\s+(SELECT[\s\S]+)$/i))){db.views[m[1].toLowerCase()]=m[2];return "View created.";}
+ if((m=s.match(/^DROP\s+(TABLE|VIEW|TRIGGER|PROCEDURE|FUNCTION)\s+(\w+)$/i))){let k={TABLE:"tables",VIEW:"views",TRIGGER:"triggers",PROCEDURE:"procedures",FUNCTION:"functions"}[m[1].toUpperCase()],n=m[2].toLowerCase();if(!db[k][n])fail("ORA-00942: object does not exist: "+n);delete db[k][n];return "Object dropped.";}
+ if((m=s.match(/^ALTER\s+TABLE\s+(\w+)\s+ADD\s+(\w+)\s+[\w()]+$/i))){let t=table(m[1]);t.cols.push(m[2].toLowerCase());t.meta.push({name:m[2].toLowerCase()});t.rows.forEach(r=>r[m[2].toLowerCase()]=null);return "Column added.";}
+ if((m=s.match(/^TRUNCATE\s+TABLE\s+(\w+)$/i))){table(m[1]).rows=[];return "Table truncated.";}
+ if((m=s.match(/^EXEC(?:UTE)?\s+(\w+)\s*(?:\(([\s\S]*)\))?$/i))){let p=db.procedures[m[1].toLowerCase()];if(!p)fail("PLS-00201: procedure must be declared");let local={...scope};p.args.forEach((a,i)=>local[a]=evalExpr(parts(m[2]||"")[i]||"NULL",scope));return runBody(p.body,local);}
+ if((m=s.match(/^OPEN\s+(\w+)$/i))){let c=cursors[m[1].toLowerCase()];if(!c)fail("PLS-00201: cursor must be declared");c.rows=select(c.query,scope);c.index=0;c.open=true;return "Cursor opened.";}
+ if((m=s.match(/^FETCH\s+(\w+)\s+INTO\s+(\w+)$/i))){let c=cursors[m[1].toLowerCase()];if(!c?.open)fail("ORA-01001: invalid cursor");let row=c.rows[c.index++];scope[m[2].toLowerCase()]=row?Object.values(row)[0]:null;return row?"1 row fetched.":"No more rows.";}
+ if((m=s.match(/^CLOSE\s+(\w+)$/i))){let c=cursors[m[1].toLowerCase()];if(!c?.open)fail("ORA-01001: invalid cursor");c.open=false;return "Cursor closed.";}
+ fail("ORA-00900: invalid or unsupported SQL statement");
+}
+function checkRow(t,r,old){
+ for(let c of t.meta){let v=r[c.name];if(c.notNull&&v===null)fail("ORA-01400: cannot insert NULL");if(c.check&&!truth(evalExpr(c.check,r)))fail("ORA-02290: check constraint violated");}
+ let sets=[...(t.pk?[t.pk]:[]),...t.unique];for(let cols of sets){if(cols.some(c=>r[c]===null))continue;if(t.rows.some(x=>x!==old&&cols.every(c=>norm(x[c])===norm(r[c]))))fail("ORA-00001: unique constraint violated");}
+ for(let fk of t.fks){let vals=fk.cols.map(c=>r[c]);if(vals.every(v=>v===null))continue;let parent=table(fk.table);if(!parent.rows.some(pr=>fk.refs.every((c,i)=>norm(pr[c])===norm(vals[i]))))fail("ORA-02291: integrity constraint violated - parent key not found");}
+}
+function runBody(body,scope={}){let result=null;for(let s of splitStatements(body.replace(/^\s*BEGIN\b/i,"").replace(/\bEND\s*;?\s*$/i,""))){let m=s.match(/^RETURN\s+([\s\S]+)$/i);if(m)result=evalExpr(m[1],{},scope);else if((m=s.match(/^([\w]+)\s*:=\s*([\s\S]+)$/i)))scope[m[1].toLowerCase()]=evalExpr(m[2],{},scope);else result=execute(s,scope);}return result??"PL/SQL block executed.";}
+function callFunction(name,args,scope={}){let f=db.functions[name.toLowerCase()];if(!f)fail("ORA-00904: invalid identifier: "+name);let local={...scope};f.args.forEach((a,i)=>local[a]=args[i]);return runBody(f.body,local);}
+function run(){
+ let statements=splitStatements($("sql").value),last=null,messages=[],done=0;
+ try{for(let i=0;i<statements.length;i++){let s=statements[i],r;
+  if(/^DECLARE\b|^BEGIN\b/i.test(s)){let dec=s.match(/CURSOR\s+(\w+)\s+IS\s+(SELECT[\s\S]*?);/i);if(dec)cursors[dec[1].toLowerCase()]={query:dec[2],rows:[],index:0,open:false};r=runBody(s.replace(/^DECLARE[\s\S]*?\bBEGIN\b/i,"").replace(/^BEGIN\b/i,"").replace(/\bEND\s*$/i,""),{});}
+  else r=execute(s);
+  if(Array.isArray(r))last=r;else if(r)messages.push(r);done++;
+ }
+ render(last);$("prompt").textContent="Statement(s) completed successfully. "+(last?last.length+" row(s) selected.":messages.join(" "));
+ }catch(e){$("prompt").textContent="Statement "+(done+1)+" failed: "+e.message;render(last);let box=document.createElement("div");box.className="error";box.textContent="Statement "+(done+1)+" failed: "+e.message;$("out").append(box);}
+ log.unshift("SQL> "+statements.join(" | "));$("history").textContent=log.slice(0,15).join("\n");
+}
+function render(rows){let out=$("out");out.replaceChildren();if(rows===null){let x=document.createElement("span");x.className="success";x.textContent="Statement processed.";out.append(x);return;}if(!rows.length){out.textContent="no rows selected";return;}let cols=[...new Set(rows.flatMap(r=>Object.keys(r)))],t=document.createElement("table"),h=document.createElement("tr");cols.forEach(c=>{let th=document.createElement("th");th.textContent=c.toUpperCase();h.append(th);});let hd=document.createElement("thead");hd.append(h);t.append(hd);let bd=document.createElement("tbody");rows.forEach(r=>{let tr=document.createElement("tr");cols.forEach(c=>{let td=document.createElement("td");td.textContent=r[c]===null?"(null)":r[c]??"";tr.append(td);});bd.append(tr);});t.append(bd);out.append(t);}
+db.tables.dual={cols:["dummy"],meta:[{name:"dummy"}],rows:[{dummy:"X"}]};
+const log=[];
+$("run").onclick=run;$("clear").onclick=()=>$("sql").value="";$("reset").onclick=()=>{for(let k of Object.keys(db))db[k]={};db.tables.dual={cols:["dummy"],meta:[{name:"dummy"}],rows:[{dummy:"X"}]};Object.keys(cursors).forEach(k=>delete cursors[k]);$("prompt").textContent="Database session reset.";$("out").textContent="No tables.";};
+$("sample").onclick=()=>$("sql").value=`CREATE TABLE students (id NUMBER PRIMARY KEY, name VARCHAR2(30), department VARCHAR2(20), marks NUMBER);
+INSERT INTO students VALUES (1, 'Anu', 'BCA', 85);
+INSERT INTO students VALUES (2, 'Ravi', 'BCA', 72);
+INSERT INTO students VALUES (3, 'Maya', 'BCom', 91);
+SELECT * FROM students;
+SELECT department, COUNT(*) AS total FROM students GROUP BY department HAVING COUNT(*) > 1;`;
+$("save").onclick=()=>{let a=document.createElement("a"),u=URL.createObjectURL(new Blob([$("sql").value],{type:"text/plain"}));a.href=u;a.download="chai_queries.sql";a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);};
+$("sql").addEventListener("keydown",e=>{if(e.ctrlKey&&e.key==="Enter")run();});
+})();
+</script></body></html>
